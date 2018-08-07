@@ -108,6 +108,7 @@ static char a2dp_hal_imp[PROPERTY_VALUE_MAX] = "false";
 
 audio_sbc_encoder_config_t sbc_codec;
 audio_aptx_encoder_config_t aptx_codec;
+audio_aptx_adaptive_encoder_config_t aptx_adaptive_codec;
 audio_aptx_tws_encoder_config_t aptx_tws_codec;
 audio_aac_encoder_config_t aac_codec;
 audio_ldac_encoder_config_t ldac_codec;
@@ -410,6 +411,98 @@ static void* a2dp_codec_parser(uint8_t *codec_cfg, audio_format_t *codec_type,
         {
             ALOGW("AptX-HD codec");
             *codec_type = AUDIO_FORMAT_APTX_HD;
+        }
+
+        if (codec_cfg[VENDOR_ID_OFFSET] == VENDOR_APTX_ADAPTIVE &&
+            codec_cfg[CODEC_ID_OFFSET] == APTX_ADAPTIVE_CODEC_ID)
+        {
+            ALOGW("AptX-Adaptive codec");
+            *codec_type = ENC_CODEC_TYPE_APTX_ADAPTIVE;
+
+            memset(&aptx_adaptive_codec, 0, sizeof(audio_aptx_adaptive_encoder_config_t));
+            p_cfg++; //skip dev_idx
+            len = *p_cfg++;//LOSC
+            p_cfg++; // Skip media type
+            len--;
+            p_cfg++; //codec_type
+            len--;
+            p_cfg+=4;//skip vendor id
+            len -= 4;
+            p_cfg += 2; //skip codec id
+            len -= 2;
+
+            switch(*p_cfg++ & A2D_APTX_ADAPTIVE_SAMP_FREQ_MASK)
+            {
+                case A2DP_APTX_ADAPTIVE_SAMPLERATE_44100:
+                     aptx_adaptive_codec.sampling_rate = 0x2;
+                     if(sample_freq) *sample_freq = 44100;
+                     break;
+                case A2DP_APTX_ADAPTIVE_SAMPLERATE_48000:
+                     aptx_adaptive_codec.sampling_rate = 0x1;
+                     if(sample_freq) *sample_freq = 48000;
+                     break;
+                case A2DP_APTX_ADAPTIVE_SAMPLERATE_88000:
+                     aptx_adaptive_codec.sampling_rate = 0;
+                     break;
+                case A2DP_APTX_ADAPTIVE_SAMPLERATE_192000:
+                     aptx_adaptive_codec.sampling_rate = 0;
+                     break;
+                default:
+                     ALOGE("Unknown sampling rate");
+            }
+            len--;
+
+            switch(*p_cfg++ & A2D_APTX_ADAPTIVE_CHAN_MASK)
+            {
+                case A2DP_APTX_ADAPTIVE_CHANNELS_MONO:
+                     aptx_adaptive_codec.channel_mode = 1;
+                     break;
+                /*case A2DP_APTX_ADAPTIVE_CHANNELS_STEREO:
+                     aptx_adaptive_codec.channel_mode = 2;
+                     break;*/
+                case A2DP_APTX_ADAPTIVE_CHANNELS_JOINT_STEREO:
+                     aptx_adaptive_codec.channel_mode = 0;
+                     break;
+                case A2DP_APTX_ADAPTIVE_CHANNELS_TWS_STEREO:
+                     aptx_adaptive_codec.channel_mode = 4;
+                     break;
+                default:
+                     ALOGE("Unknown sampling rate");
+            }
+            len--;
+
+            aptx_adaptive_codec.min_sink_buffering_LL = 20; // gghai temp setting to default value
+            aptx_adaptive_codec.max_sink_buffering_LL = 50;
+            aptx_adaptive_codec.min_sink_buffering_HQ = 20;
+            aptx_adaptive_codec.max_sink_buffering_HQ = 50;
+            aptx_adaptive_codec.min_sink_buffering_TWS = 20;
+            aptx_adaptive_codec.max_sink_buffering_TWS = 50;
+
+            aptx_adaptive_codec.TTP_LL_low = *(p_cfg ++);
+            aptx_adaptive_codec.TTP_LL_high = *(p_cfg ++);
+            aptx_adaptive_codec.TTP_HQ_low = *(p_cfg ++);
+            aptx_adaptive_codec.TTP_HQ_high = *(p_cfg ++);
+            aptx_adaptive_codec.TTP_TWS_low = *(p_cfg ++);
+            aptx_adaptive_codec.TTP_TWS_high = *(p_cfg ++);
+            len -= 6;
+
+            p_cfg += 3; // ignoring eoc bits
+            len -= 3;
+            ALOGW("%s: ## aptXAdaptive ## sampleRate 0x%x", __func__, aptx_adaptive_codec.sampling_rate);
+            ALOGW("%s: ## aptXAdaptive ## channelMode 0x%x", __func__, aptx_adaptive_codec.channel_mode);
+            ALOGW("%s: ## aptXAdaptive ## ttp_ll_0 0x%x", __func__, aptx_adaptive_codec.TTP_LL_low);
+            ALOGW("%s: ## aptXAdaptive ## ttp_ll_1 0x%x", __func__, aptx_adaptive_codec.TTP_LL_high);
+            ALOGW("%s: ## aptXAdaptive ## ttp_hq_0 0x%x", __func__, aptx_adaptive_codec.TTP_HQ_low);
+            ALOGW("%s: ## aptXAdaptive ## ttp_hq_1 0x%x", __func__, aptx_adaptive_codec.TTP_HQ_high);
+            ALOGW("%s: ## aptXAdaptive ## ttp_tws_0 0x%x", __func__, aptx_adaptive_codec.TTP_TWS_low);
+            ALOGW("%s: ## aptXAdaptive ## ttp_tws_1 0x%x", __func__, aptx_adaptive_codec.TTP_TWS_high);
+
+            if(len == 0)
+                ALOGW("%s: codec config copied", __func__);
+            else
+                ALOGW("%s: codec config length error: %d", __func__, len);
+
+            return ((void *)&aptx_adaptive_codec);
         }
 
         if (vendor_ldac_id == VENDOR_LDAC &&
@@ -894,7 +987,7 @@ int audio_start_stream()
         pthread_mutex_unlock(&audio_stream.lock);
         return -1;
     }
-    if (property_get("persist.vendor.bt.a2dp.hal.implementation", a2dp_hal_imp, "false") &&
+    if (property_get("persist.vendor.bluetooth.a2dp.hal.implementation", a2dp_hal_imp, "false") &&
             !strcmp(a2dp_hal_imp, "true"))
     {
       if (audio_stream.state == AUDIO_A2DP_STATE_STARTED)
@@ -930,7 +1023,7 @@ int audio_start_stream()
                 {
                     ALOGW("waiting in pending");
                     ack_recvd = 0;
-                    if (property_get("persist.vendor.bt.a2dp.hal.implementation", a2dp_hal_imp, "false") &&
+                    if (property_get("persist.vendor.bluetooth.a2dp.hal.implementation", a2dp_hal_imp, "false") &&
                             !strcmp(a2dp_hal_imp, "true"))
                     {
                         wait_for_stack_response(1);
@@ -968,7 +1061,7 @@ int audio_start_stream()
                     audio_stream.state = AUDIO_A2DP_STATE_STOPPED;
                     goto end;
                 }
-                else if (property_get("persist.vendor.bt.a2dp.hal.implementation", a2dp_hal_imp, "false") &&
+                else if (property_get("persist.vendor.bluetooth.a2dp.hal.implementation", a2dp_hal_imp, "false") &&
                         !strcmp(a2dp_hal_imp, "true") &&
                         status == A2DP_CTRL_ACK_PREVIOUS_COMMAND_PENDING)
                 {
@@ -1107,7 +1200,7 @@ int audio_stop_stream()
             if (status == A2DP_CTRL_ACK_PENDING)
             {
                 ack_recvd = 0;
-                if (property_get("persist.vendor.bt.a2dp.hal.implementation", a2dp_hal_imp, "false") &&
+                if (property_get("persist.vendor.bluetooth.a2dp.hal.implementation", a2dp_hal_imp, "false") &&
                         !strcmp(a2dp_hal_imp, "true"))
                 {
                     wait_for_stack_response(1);
@@ -1127,7 +1220,7 @@ int audio_stop_stream()
                 pthread_mutex_unlock(&audio_stream.lock);
                 return 0;
             }
-            else if (property_get("persist.vendor.bt.a2dp.hal.implementation", a2dp_hal_imp, "false") &&
+            else if (property_get("persist.vendor.bluetooth.a2dp.hal.implementation", a2dp_hal_imp, "false") &&
                     !strcmp(a2dp_hal_imp, "true") &&
                     status == A2DP_CTRL_ACK_PREVIOUS_COMMAND_PENDING)
             {
@@ -1184,7 +1277,7 @@ int audio_suspend_stream()
             {
                 //TODO wait for the response;
                 ack_recvd = 0;
-                if (property_get("persist.vendor.bt.a2dp.hal.implementation", a2dp_hal_imp, "false") &&
+                if (property_get("persist.vendor.bluetooth.a2dp.hal.implementation", a2dp_hal_imp, "false") &&
                         !strcmp(a2dp_hal_imp, "true"))
                 {
                     wait_for_stack_response(1);
@@ -1203,7 +1296,7 @@ int audio_suspend_stream()
                 pthread_mutex_unlock(&audio_stream.lock);
                 return 0;
             }
-            else if (property_get("persist.vendor.bt.a2dp.hal.implementation", a2dp_hal_imp, "false") &&
+            else if (property_get("persist.vendor.bluetooth.a2dp.hal.implementation", a2dp_hal_imp, "false") &&
                     !strcmp(a2dp_hal_imp, "true") &&
                     status == A2DP_CTRL_ACK_PREVIOUS_COMMAND_PENDING)
             {
@@ -1309,7 +1402,7 @@ int audio_check_a2dp_ready()
     ALOGW("audio_check_a2dp_ready: state %s", dump_a2dp_hal_state(audio_stream.state));
     tA2DP_CTRL_ACK status;
     pthread_mutex_lock(&audio_stream.lock);
-    if (property_get("persist.vendor.bt.a2dp.hal.implementation", a2dp_hal_imp, "false") &&
+    if (property_get("persist.vendor.bluetooth.a2dp.hal.implementation", a2dp_hal_imp, "false") &&
             !strcmp(a2dp_hal_imp, "true") &&
             audio_stream.state == AUDIO_A2DP_STATE_SUSPENDED)
     {
@@ -1412,6 +1505,7 @@ bool audio_is_scrambling_enabled(void)
         ALOGE("Error in fetching persist.vendor.bluetooth.soc.scram_freqs property");
         return false;
     }
+	ALOGE("scram_freqs Prop value = %s", value);
 
     pthread_mutex_lock(&audio_stream.lock);
     for (i = 0; i < STREAM_START_MAX_RETRY_COUNT; i++)
@@ -1433,6 +1527,12 @@ bool audio_is_scrambling_enabled(void)
         pthread_mutex_unlock(&audio_stream.lock);
         return false;
     }
+    if (codec_type == ENC_CODEC_TYPE_APTX_ADAPTIVE) {
+        ALOGW("%s:aptX Adaptive codec, return false",__func__);
+        pthread_mutex_unlock(&audio_stream.lock);
+        return false;
+    }
+
     if(status == A2DP_CTRL_ACK_SUCCESS) {
 
         if (codec_type == CODEC_TYPE_CELT) {
